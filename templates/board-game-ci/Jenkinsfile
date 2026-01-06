@@ -84,7 +84,7 @@ pipeline {
       steps {
         withSonarQubeEnv('sonar-server') {
           sh """
-            mvn -o \
+            mvn \
               -Dmaven.repo.local=${MAVEN_REPO} \
               org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
               -Dsonar.projectKey=${sonarProjectKey} \
