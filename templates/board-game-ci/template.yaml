@@ -23,8 +23,8 @@ parameters:
     description: Branch to build
     defaultValue: main
 
-  - name: gitCredentials
-    type: credentials
-    displayName: Git Credentials
-    description: Credentials to access the Git repository
-    required: true
+  - name: sonarProjectKey
+    type: string
+    displayName: SonarQube Project Key
+    description: Unique SonarQube project key
+    defaultValue: board_game
