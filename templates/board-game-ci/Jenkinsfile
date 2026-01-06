@@ -8,65 +8,39 @@ pipeline {
     }
   }
 
-  /* ================= PARAMETERS (REQUIRED FOR CATALOG) ================= */
-  parameters {
-    string(
-      name: 'repoUrl',
-      description: 'Git repository URL'
-    )
-    string(
-      name: 'branchName',
-      defaultValue: 'main',
-      description: 'Git branch to build'
-    )
-    credentials(
-      name: 'gitCredentials',
-      description: 'Git credentials'
-    )
-    string(
-      name: 'imageName',
-      defaultValue: 'gkamalakar1006/boardgames',
-      description: 'Docker image name'
-    )
-    string(
-      name: 'sonarProjectKey',
-      defaultValue: 'board_game',
-      description: 'SonarQube project key'
-    )
+  options {
+    skipDefaultCheckout true
+    disableConcurrentBuilds()
+    durabilityHint('PERFORMANCE_OPTIMIZED')
   }
 
-  /* ================= ENVIRONMENT ================= */
   environment {
-    IMAGE_NAME = "${params.imageName}"
-    IMAGE_TAG  = "${BUILD_NUMBER}"
-
-    MAVEN_REPO = 'maven-repo'
+    MAVEN_REPO     = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
-
-    TRIVY_CACHE_DIR = '.trivycache'
-    TRIVY_CACHE_NAME = 'trivy-cache'
-    TRIVY_DB_REPOSITORY = 'docker.io/aquasec/trivy-db'
-    TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
-
-    KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
   }
 
   stages {
 
-    /* ================= CHECKOUT ================= */
+    /* ================= SCM CHECKOUT ================= */
     stage('Checkout') {
       steps {
-        echo "Checkout → repo=${params.repoUrl}, branch=${params.branchName}, creds=${params.gitCredentials}"
+        echo "Checkout → repo=${repoUrl}, branch=${branchName}, creds=${gitCredentials}"
 
-        git(
-          url: params.repoUrl,
-          branch: params.branchName,
-          credentialsId: params.gitCredentials
-        )
+        checkout([
+          $class: 'GitSCM',
+          branches: [[name: "${branchName}"]],
+          doGenerateSubmoduleConfigurations: false,
+          extensions: [],
+          submoduleCfg: [],
+          userRemoteConfigs: [[
+            url: "${repoUrl}",
+            credentialsId: "${gitCredentials}"
+          ]]
+        ])
       }
     }
 
-    /* ================= MAVEN ================= */
+    /* ================= RESTORE MAVEN CACHE ================= */
     stage('Restore Maven Cache') {
       steps {
         sh "mkdir -p ${MAVEN_REPO}"
@@ -74,7 +48,8 @@ pipeline {
       }
     }
 
-    stage('Maven Build') {
+    /* ================= MAVEN CLEAN BUILD ================= */
+    stage('Maven Clean Build') {
       steps {
         sh """
           mvn clean install \
@@ -83,8 +58,8 @@ pipeline {
       }
     }
 
+    /* ================= SAVE MAVEN CACHE ================= */
     stage('Save Maven Cache') {
-      when { expression { env.CHANGE_ID == null } }
       steps {
         writeCache(
           name: "${MVN_CACHE_NAME}",
@@ -92,135 +67,11 @@ pipeline {
         )
       }
     }
-
-    /* ================= SONAR ================= */
-    stage('SonarQube Scan') {
-      steps {
-        withSonarQubeEnv('sonar-server') {
-          sh """
-            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-              -Dmaven.repo.local=${MAVEN_REPO} \
-              -Dsonar.projectKey=${params.sonarProjectKey} \
-              -Dsonar.projectName=${params.sonarProjectKey}
-          """
-        }
-      }
-    }
-
-    /* ================= TRIVY FS ================= */
-    stage('Restore Trivy Cache') {
-      steps {
-        sh "mkdir -p ${TRIVY_CACHE_DIR} trivy-templates trivy-reports"
-        readCache name: "${TRIVY_CACHE_NAME}"
-      }
-    }
-
-    stage('Prepare Trivy Template') {
-      steps {
-        sh '''
-          if [ ! -f trivy-templates/html.tpl ]; then
-            curl -fsSL \
-              https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
-              -o trivy-templates/html.tpl
-          fi
-        '''
-      }
-    }
-
-    stage('Trivy FS Scan (Non-Blocking)') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            trivy fs \
-              --cache-dir "$TRIVY_CACHE_DIR" \
-              --db-repository "$TRIVY_DB_REPOSITORY" \
-              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
-              --scanners vuln,license \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/fs-vuln.html .
-          '''
-        }
-      }
-    }
-
-    /* ================= KANIKO ================= */
-    stage('Kaniko Build & Push') {
-      steps {
-        container('kaniko') {
-          sh '''
-            mkdir -p "$KANIKO_CACHE_DIR"
-
-            /kaniko/executor \
-              --context /workspace \
-              --dockerfile Dockerfile \
-              --destination ${IMAGE_NAME}:${IMAGE_TAG} \
-              --destination ${IMAGE_NAME}:latest \
-              --cache=true \
-              --cache-dir="$KANIKO_CACHE_DIR"
-          '''
-        }
-      }
-    }
-
-    /* ================= TRIVY IMAGE ================= */
-    stage('Trivy Image Scan (Non-Blocking)') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            trivy image \
-              --cache-dir "$TRIVY_CACHE_DIR" \
-              --db-repository "$TRIVY_DB_REPOSITORY" \
-              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
-              --scanners vuln \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/image-vuln.html \
-              ${IMAGE_NAME}:${IMAGE_TAG}
-          '''
-        }
-      }
-    }
-
-    /* ================= SBOM ================= */
-    stage('Generate SBOM (CycloneDX)') {
-      steps {
-        sh '''
-          trivy fs \
-            --cache-dir "$TRIVY_CACHE_DIR" \
-            --format cyclonedx \
-            --output trivy-reports/source-sbom.json .
-        '''
-      }
-    }
-
-    /* ================= SAVE TRIVY CACHE ================= */
-    stage('Save Trivy Cache') {
-      when { expression { env.CHANGE_ID == null } }
-      steps {
-        writeCache(
-          name: "${TRIVY_CACHE_NAME}",
-          includes: "${TRIVY_CACHE_DIR}/**,trivy-templates/**"
-        )
-      }
-    }
   }
 
-  /* ================= POST ================= */
   post {
     always {
-      archiveArtifacts(
-        allowEmptyArchive: true,
-        artifacts: 'trivy-reports/*.html,trivy-reports/*.json'
-      )
-
-      echo "Build #: ${BUILD_NUMBER}"
-      echo "Result  : ${currentBuild.currentResult}"
-
+      echo "Build completed: #${BUILD_NUMBER}"
       deleteDir()
     }
   }
