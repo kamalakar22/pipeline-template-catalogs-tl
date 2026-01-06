@@ -8,22 +8,28 @@ pipeline {
     }
   }
 
+  /* ================= PARAMETERS (CATALOG REQUIRED) ================= */
+  parameters {
+    string(name: 'repoUrl', description: 'Git repository URL')
+    string(name: 'branchName', defaultValue: 'main', description: 'Git branch')
+    credentials(name: 'gitCredentials', description: 'Git credentials')
+    string(name: 'imageName', defaultValue: 'gkamalakar1006/boardgames', description: 'Docker image name')
+    string(name: 'sonarProjectKey', defaultValue: 'board_game', description: 'SonarQube project key')
+  }
+
+  /* ================= ENVIRONMENT ================= */
   environment {
-    /* ================= IMAGE ================= */
     IMAGE_NAME = "${params.imageName}"
     IMAGE_TAG  = "${BUILD_NUMBER}"
 
-    /* ================= MAVEN ================= */
     MAVEN_REPO = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
 
-    /* ================= TRIVY ================= */
     TRIVY_CACHE_DIR = '.trivycache'
     TRIVY_CACHE_NAME = 'trivy-cache'
     TRIVY_DB_REPOSITORY = 'docker.io/aquasec/trivy-db'
     TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
 
-    /* ================= KANIKO ================= */
     KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
   }
 
@@ -53,10 +59,7 @@ pipeline {
 
     stage('Maven Build') {
       steps {
-        sh """
-          mvn clean install \
-            -Dmaven.repo.local=${MAVEN_REPO}
-        """
+        sh "mvn clean install -Dmaven.repo.local=${MAVEN_REPO}"
       }
     }
 
@@ -109,6 +112,8 @@ pipeline {
           sh '''
             trivy fs \
               --cache-dir "$TRIVY_CACHE_DIR" \
+              --db-repository "$TRIVY_DB_REPOSITORY" \
+              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
               --scanners vuln,license \
               --severity LOW,MEDIUM,HIGH,CRITICAL \
               --ignore-unfixed \
@@ -138,18 +143,52 @@ pipeline {
       }
     }
 
+    /* ================= TRIVY IMAGE ================= */
+    stage('Trivy Image Scan (Non-Blocking)') {
+      steps {
+        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+          sh '''
+            trivy image \
+              --cache-dir "$TRIVY_CACHE_DIR" \
+              --db-repository "$TRIVY_DB_REPOSITORY" \
+              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
+              --scanners vuln \
+              --severity LOW,MEDIUM,HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format template \
+              --template @trivy-templates/html.tpl \
+              --output trivy-reports/image-vuln.html \
+              ${IMAGE_NAME}:${IMAGE_TAG}
+          '''
+        }
+      }
+    }
+
     /* ================= SBOM ================= */
-    stage('Generate SBOM') {
+    stage('Generate SBOM (CycloneDX)') {
       steps {
         sh '''
           trivy fs \
+            --cache-dir "$TRIVY_CACHE_DIR" \
             --format cyclonedx \
             --output trivy-reports/source-sbom.json .
         '''
       }
     }
+
+    /* ================= SAVE TRIVY CACHE ================= */
+    stage('Save Trivy Cache') {
+      when { expression { env.CHANGE_ID == null } }
+      steps {
+        writeCache(
+          name: "${TRIVY_CACHE_NAME}",
+          includes: "${TRIVY_CACHE_DIR}/**,trivy-templates/**"
+        )
+      }
+    }
   }
 
+  /* ================= POST ================= */
   post {
     always {
       archiveArtifacts(
@@ -160,4 +199,3 @@ pipeline {
     }
   }
 }
-
