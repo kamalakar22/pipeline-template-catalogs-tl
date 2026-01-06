@@ -54,12 +54,13 @@ pipeline {
       }
     }
 
-    /* ================= MAVEN CLEAN BUILD ================= */
-    stage('Maven Clean Build') {
+    /* ================= MAVEN BUILD ================= */
+    stage('Maven Build') {
       steps {
         sh """
           mvn clean install \
-            -Dmaven.repo.local=${MAVEN_REPO}
+            -Dmaven.repo.local=${MAVEN_REPO} \
+            -DskipTests
         """
       }
     }
@@ -71,6 +72,21 @@ pipeline {
           name: "${MVN_CACHE_NAME}",
           includes: "${MAVEN_REPO}/**"
         )
+      }
+    }
+
+    /* ================= SONARQUBE SCAN ================= */
+    stage('SonarQube Scan') {
+      steps {
+        withSonarQubeEnv('sonar-server') {
+          sh """
+            mvn \
+              -Dmaven.repo.local=${MAVEN_REPO} \
+              org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+              -Dsonar.projectKey=${sonarProjectKey} \
+              -Dsonar.projectName=${sonarProjectKey}
+          """
+        }
       }
     }
 
@@ -89,7 +105,7 @@ pipeline {
       }
     }
 
-    /* ================= TRIVY FS SCAN ================= */
+    /* ================= TRIVY FILESYSTEM SCAN ================= */
     stage('Trivy FS Scan (Non-Blocking)') {
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
@@ -108,20 +124,6 @@ pipeline {
         }
       }
     }
-
-    /* ================= SONARQUBE SCAN ================= */
-    stage('SonarQube Scan') {
-      steps {
-        withSonarQubeEnv('sonar-server') {
-          sh """
-            mvn sonar:sonar \
-              -Dmaven.repo.local=${MAVEN_REPO} \
-              -Dsonar.projectKey=${sonarProjectKey} \
-              -Dsonar.projectName=${sonarProjectKey}
-          """
-        }
-      }
-    }
   }
 
   post {
@@ -130,6 +132,7 @@ pipeline {
         allowEmptyArchive: true,
         artifacts: 'trivy-reports/*.html'
       )
+
       echo "Build completed: #${BUILD_NUMBER}"
       deleteDir()
     }
