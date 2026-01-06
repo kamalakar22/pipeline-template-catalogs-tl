@@ -1,15 +1,16 @@
 type: pipeline-template
 version: 1
 
-name: Java Maven CI with Trivy & Sonar
-displayName: Java CI – Maven, Trivy FS & SonarQube
+name: Java Maven CI with Sonar, Trivy & Kaniko
+displayName: Java CI – Build, Scan, Image & SBOM
 
 description: >
-  Standard Java CI pipeline.
-  Checks out source code from Git, restores Maven cache,
-  runs a Maven clean build, performs Trivy filesystem scan,
-  and runs SonarQube analysis.
-  All secrets are managed via Jenkins credentials.
+  Enterprise Java CI pipeline.
+  Automatically checks out source code, builds with Maven,
+  runs SonarQube analysis, performs Trivy security scans,
+  builds and pushes Docker images using Kaniko,
+  and generates SBOM reports.
+  Image names are derived automatically from repository names.
 
 parameters:
   - name: repoUrl
@@ -34,10 +35,4 @@ parameters:
     type: string
     displayName: SonarQube Project Key
     description: Unique project key in SonarQube
-    required: true
-
-  - name: imageName
-    type: string
-    displayName: Docker Image Name
-    description: "Example: gkamalakar1006/boardgames"
     required: true
