@@ -142,7 +142,6 @@ pipeline {
             git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/kamalakar22/argo-deploy.git
             cd argo-deploy
 
-            echo "Updating image in manifests/deployment-service.yaml"
             sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" manifests/deployment-service.yaml
 
             git config user.email "jenkins@cloudbees.local"
@@ -159,17 +158,20 @@ pipeline {
     }
   }
 
-  /* ================= ARCHIVE & CLEANUP ================= */
+  /* ================= POST ================= */
   post {
     always {
-      archiveArtifacts(
-        allowEmptyArchive: true,
-        artifacts: '''
-          trivy-reports/*.html,
-          trivy-reports/*.json
-        '''
-      )
-      echo "Pipeline completed successfully: Build #${BUILD_NUMBER}"
+      // Avoid archive warnings when Trivy is disabled
+      sh 'mkdir -p trivy-reports || true'
+
+      archiveArtifacts allowEmptyArchive: true, artifacts: '''
+        trivy-reports/*.html,
+        trivy-reports/*.json
+      '''
+
+      echo "Build #: ${BUILD_NUMBER}"
+      echo "Result  : ${currentBuild.currentResult}"
+
       deleteDir()
     }
   }
