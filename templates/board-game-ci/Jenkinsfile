@@ -44,12 +44,7 @@ pipeline {
       }
     }
 
-    /* ================= DERIVE IMAGE NAME =================
-       Image name is derived automatically from repo name
-       Example:
-         repo: github.com/org/order-service
-         image: docker.io/gkamalakar1006/order-service
-    */
+    /* ================= DERIVE IMAGE NAME ================= */
     stage('Derive Image Name') {
       steps {
         script {
@@ -61,7 +56,7 @@ pipeline {
           env.IMAGE_NAME = "docker.io/gkamalakar1006/${repo}"
           env.IMAGE_TAG  = "${BUILD_NUMBER}"
 
-          echo "Derived image: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
+          echo "Image: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
         }
       }
     }
@@ -110,46 +105,7 @@ pipeline {
       }
     }
 
-    /* ================= PREPARE TRIVY TEMPLATE ================= */
-    stage('Prepare Trivy Template') {
-      steps {
-        sh '''
-          mkdir -p trivy-templates trivy-reports
-          if [ ! -f trivy-templates/html.tpl ]; then
-            curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
-              -o trivy-templates/html.tpl
-          fi
-        '''
-      }
-    }
-
-    /* ================= TRIVY FS SCAN =================
-       - Scans source code & dependency files
-       - Finds vulnerable libraries & license issues
-    */
-    stage('Trivy FS Scan (Non-Blocking)') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            trivy fs \
-              --cache-dir "$TRIVY_CACHE_DIR" \
-              --db-repository "$TRIVY_DB_REPOSITORY" \
-              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
-              --scanners vuln,license \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/fs-vuln.html .
-          '''
-        }
-      }
-    }
-
-    /* ================= KANIKO BUILD & PUSH =================
-       - Uses Kubernetes Secret mounted at /kaniko/.docker
-       - No Jenkins credentials required
-    */
+    /* ================= KANIKO BUILD & PUSH ================= */
     stage('Kaniko Build & Push') {
       steps {
         container('kaniko') {
@@ -168,53 +124,55 @@ pipeline {
       }
     }
 
-    /* ================= TRIVY IMAGE SCAN =================
-       - Scans final container image
-       - Detects OS & runtime vulnerabilities
-    */
-    stage('Trivy Image Scan (Non-Blocking)') {
+    /* ================= ARGO CD DEPLOY (GITOPS) ================= */
+    stage('Argo CD Deploy (GitOps)') {
+      when {
+        branch 'main'
+      }
       steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+        withCredentials([
+          usernamePassword(
+            credentialsId: 'gitops-github-token',
+            usernameVariable: 'GIT_USER',
+            passwordVariable: 'GIT_TOKEN'
+          )
+        ]) {
           sh '''
-            trivy image \
-              --cache-dir "$TRIVY_CACHE_DIR" \
-              --db-repository "$TRIVY_DB_REPOSITORY" \
-              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
-              --scanners vuln \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/image-vuln.html \
-              ${IMAGE_NAME}:${IMAGE_TAG}
+            set -e
+            echo "Updating GitOps repository for Argo CD deployment"
+
+            rm -rf argo-deploy
+            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/kamalakar22/argo-deploy.git
+            cd argo-deploy
+
+            echo "Updating image in manifests/deployment-service.yaml"
+            sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" manifests/deployment-service.yaml
+
+            git config user.email "jenkins@cloudbees.local"
+            git config user.name "jenkins"
+
+            git add manifests/deployment-service.yaml
+            git commit -m "Deploy ${IMAGE_NAME}:${IMAGE_TAG} (Build #${BUILD_NUMBER})"
+            git push origin main
+
+            echo "GitOps repo updated. Argo CD will auto-sync."
           '''
         }
       }
     }
-
-    /* ================= SBOM GENERATION =================
-       - Generates CycloneDX SBOM
-       - Used for compliance & audits
-    */
-    stage('Generate SBOM') {
-      steps {
-        sh '''
-          trivy fs \
-            --cache-dir "$TRIVY_CACHE_DIR" \
-            --format cyclonedx \
-            --output trivy-reports/source-sbom.json .
-        '''
-      }
-    }
   }
 
+  /* ================= ARCHIVE ARTIFACTS ================= */
   post {
     always {
       archiveArtifacts(
         allowEmptyArchive: true,
-        artifacts: 'trivy-reports/*.html, trivy-reports/*.json'
+        artifacts: '''
+          trivy-reports/*.html,
+          trivy-reports/*.json
+        '''
       )
-      echo "Build completed: #${BUILD_NUMBER}"
+      echo "Pipeline completed: Build #${BUILD_NUMBER}"
       deleteDir()
     }
   }
