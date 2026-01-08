@@ -56,7 +56,7 @@ pipeline {
           env.IMAGE_NAME = "docker.io/gkamalakar1006/${repo}"
           env.IMAGE_TAG  = "${BUILD_NUMBER}"
 
-          echo "Image: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
+          echo "Image to build: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
         }
       }
     }
@@ -126,9 +126,6 @@ pipeline {
 
     /* ================= ARGO CD DEPLOY (GITOPS) ================= */
     stage('Argo CD Deploy (GitOps)') {
-      when {
-        branch 'main'
-      }
       steps {
         withCredentials([
           usernamePassword(
@@ -162,7 +159,7 @@ pipeline {
     }
   }
 
-  /* ================= ARCHIVE ARTIFACTS ================= */
+  /* ================= ARCHIVE & CLEANUP ================= */
   post {
     always {
       archiveArtifacts(
@@ -172,7 +169,7 @@ pipeline {
           trivy-reports/*.json
         '''
       )
-      echo "Pipeline completed: Build #${BUILD_NUMBER}"
+      echo "Pipeline completed successfully: Build #${BUILD_NUMBER}"
       deleteDir()
     }
   }
